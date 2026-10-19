@@ -4,18 +4,18 @@ import pandas as pd
 import plotly.express as px
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
 
 st.set_page_config(page_title="영화 유형 나누기", page_icon="🎬", layout="wide")
 
 DATA_URL = "https://raw.githubusercontent.com/it-teacher-go/data-share-/main/kobis_movies.csv"
 SEED = 42
-TYPE_NAMES = ["㉮", "㉯", "㉰"]
+TYPE_NAMES = ["㉮", "㉯", "㉰", "㉱", "㉲", "㉳", "㉴"]
 FEATURES = ["스크린 수 (로그)", "누적 관객 (로그)", "10위권 일수", "롱런 지수"]
 
 
 @st.cache_data
 def load_data():
-    # 원본 편수도 함께 세기 위해 한 번만 읽는다.
     raw = pd.read_csv(DATA_URL, encoding="utf-8")
     required = [
         "movieCd", "movieNm", "first_scrn", "first_week_audi",
@@ -31,7 +31,6 @@ def load_data():
     for col in numeric:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 필수 숫자값 결측, 0 이하의 로그 불가 값, 첫 주 관객 0인 영화 제외
     valid = df[numeric].notna().all(axis=1)
     valid &= df["first_scrn"] > 0
     valid &= df["total_audi"] > 0
@@ -47,6 +46,14 @@ def load_data():
     df["누적 관객 (로그)"] = df["누적 관객"].map(math.log10)
     df["영화 제목"] = df["movieNm"].fillna("(제목 없음)").astype(str)
     return df.reset_index(drop=True), original_count
+
+
+def fit_kmeans(data, features, k):
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(data[features].astype(float))
+    model = KMeans(n_clusters=k, random_state=SEED, n_init=10)
+    labels = model.fit_predict(scaled)
+    return scaled, model, labels
 
 
 st.title("🎬 영화 유형 나누기")
@@ -66,30 +73,24 @@ st.caption(
 
 st.subheader("1. 유형 분류에 사용할 속성")
 selected_features = st.multiselect(
-    "두 개 이상 선택해 주세요. 기본값은 네 가지 속성 전체입니다.",
+    "분류에 사용할 속성을 두 개 이상 선택해 주세요. 기본값은 네 가지 속성 전체입니다.",
     options=FEATURES,
     default=FEATURES,
     help="스크린 수와 누적 관객은 상용로그로 변환합니다. 롱런 지수는 누적 관객 ÷ 첫 주 관객이며 최대 20입니다."
 )
-
 if len(selected_features) < 2:
     st.warning("K-평균 분류를 위해 속성을 두 개 이상 선택해 주세요.")
     st.stop()
 
-# 선택 속성 표준화 후 K-평균으로 3개 군집 생성
-X = df[selected_features].astype(float)
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-model = KMeans(n_clusters=3, random_state=SEED, n_init=10)
-df["군집 번호"] = model.fit_predict(X_scaled)
+if len(df) < 7:
+    st.error("묶음 수 2~7을 비교하려면 분석에 사용할 영화가 최소 7편 필요합니다.")
+    st.stop()
 
-# 원래 단위의 누적 관객 평균이 높은 군집부터 ㉮, ㉯, ㉰ 지정
-cluster_order = (
-    df.groupby("군집 번호")["누적 관객"]
-    .mean()
-    .sort_values(ascending=False)
-    .index.tolist()
-)
-label_map = {cluster_id: TYPE_NAMES[i] for i, cluster_id in enumerate(cluster_order)}
-df["영화 유형"] = df["군집 번호"].map(label_map)
-df["영화 유형"] = pd.Categorical(df["영화 유형"], categories=TYPE_NAMES, ordered=True)
+st.subheader("2. 묶음 수 정하기")
+cluster_count = st.slider("묶음 수 (K)", min_value=2, max_value=7, value=3, step=1)
+
+# 선택한 속성으로 표준화하고 K=2~7의 군집 내 제곱합(inertia) 계산
+scaled, selected_model, selected_labels = fit_kmeans(df, selected_features, cluster_count)
+elbow_rows = []
+for k in range(1, 8):
+    if k == 1:
